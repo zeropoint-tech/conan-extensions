@@ -114,7 +114,7 @@ def _get_requested_by(nodes, node_id, artifact_type):
 class _BuildInfo:
 
     def __init__(self, conan_api, graph, name, number, repositories, build_url=None, with_dependencies=False,
-                 add_cached_deps=False, url=None, user=None, password=None):
+                 add_cached_deps=False, add_cached_deps_only=False, url=None, user=None, password=None):
         self._conan_api = conan_api
         self._graph = graph
         self._name = name
@@ -128,7 +128,7 @@ class _BuildInfo:
         self._cached_artifact_origin = {}
         self._with_dependencies = with_dependencies
         self._add_cached_deps = add_cached_deps
-
+        self._add_cached_deps_only = add_cached_deps_only
     def _get_origin_repo(self, node):
         if not self._repositories:
             raise ConanException("No repositories were provided to search for artifacts.")
@@ -313,14 +313,23 @@ class _BuildInfo:
                 transitive_dependencies = node.get("dependencies").keys() if node.get("dependencies").keys() else []
                 binary = node.get("binary")
 
-                if ref and ((binary == "Build") or (binary in ["Cache", "Download", "Update"] and self._add_cached_deps)):
+                if ref and ((binary == "Build") or (binary in ["Cache", "Download", "Update"] and (self._add_cached_deps or self._add_cached_deps_only))):
+
+                    artifacts = []
+
+                    # Only attach artifacts to the module if it's a built package or if it's a cached package and the flag --add-cached-deps-only is not set.
+                    if binary == "Build":
+                        artifacts = self.get_artifacts(node, "recipe")
 
                     # recipe module
                     module = {
                         "type": "conan",
                         "id": str(ref),
-                        "artifacts": self.get_artifacts(node, "recipe")
+                        "artifacts": artifacts
                     }
+
+                    if artifacts:
+                        modules["artifacts"] = artifacts
 
                     if self._with_dependencies:
                         all_dependencies = []
@@ -433,6 +442,9 @@ def build_info_create(conan_api: ConanAPI, parser, subparser, *args):
                            "but also the ones that are used from the cache but not built. Default: false.",
                            action='store_true', default=False)
 
+    subparser.add_argument("--add-cached-deps-only", help="It will add only the Conan packages that are used from the cache but not built. Default: false.",
+                           action='store_true', default=False)
+
     args = parser.parse_args(*args)
 
     url, user, password = get_url_user_password(args)
@@ -447,7 +459,9 @@ def build_info_create(conan_api: ConanAPI, parser, subparser, *args):
     bi = _BuildInfo(conan_api, data, args.build_name, args.build_number, repositories=args.repository,
                     build_url=args.build_url,
                     with_dependencies=args.with_dependencies,
-                    add_cached_deps=args.add_cached_deps, url=url, user=user, password=password)
+                    add_cached_deps=args.add_cached_deps,
+                    add_cached_deps_only=args.add_cached_deps_only,
+                    url=url, user=user, password=password)
 
     return bi.create()
 
