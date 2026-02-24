@@ -329,7 +329,7 @@ class _BuildInfo:
                     }
 
                     if artifacts:
-                        modules["artifacts"] = artifacts
+                        module["artifacts"] = artifacts
 
                     if self._with_dependencies:
                         all_dependencies = []
