@@ -49,6 +49,12 @@ def _request(url, user, password, request_type, request_url):
 
 def _promote_path(url, user, password, origin, destination, path):
     ConanOutput().subtitle(f"Promoting {path}")
+    # .timestamp is created by Artifactory automatically when any file is copied
+    # into that revision path. Explicitly copying it requires override/delete
+    # permission and is unnecessary.
+    if path.endswith("/.timestamp"):
+        ConanOutput().info("Skipping .timestamp (managed by Artifactory)")
+        return
     path = urllib.parse.quote_plus(path, safe='/')
     # The copy api creates a subfolder if the destination already exists, need to check beforehand to avoid this
     try:
