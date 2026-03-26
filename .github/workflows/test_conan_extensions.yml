@@ -1,8 +1,14 @@
 on: [pull_request, workflow_dispatch]
+permissions:
+  contents: read
 
 jobs:
   conan_linux:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.14']
     services:
       artifactory:
         image: releases-docker.jfrog.io/jfrog/artifactory-pro:latest
@@ -37,6 +43,7 @@ jobs:
         fi
 
     - name: Wait for Artifactory to be ready
+      if: env.HAS_ARTIFACTORY_CREDS == 'true'
       run: |
         until curl -s http://localhost:8081/artifactory/api/system/ping; do
           echo "Waiting for Artifactory to be ready..."
@@ -72,7 +79,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.9
+        python-version: ${{ matrix.python-version }}
 
     - name: Install dependencies
       run: |
@@ -82,13 +89,13 @@ jobs:
     - name: Install Conan latest
       run: pip install conan
 
-    - name: Run tests - Conan latest / Python 3.9
+    - name: Run tests - Conan latest / Python ${{ matrix.python-version }}
       run: pytest -v tests
 
     - name: Install Conan develop
       run: pip install git+https://github.com/conan-io/conan.git@develop2
 
-    - name: Run tests - Conan develop / Python 3.9
+    - name: Run tests - Conan develop / Python ${{ matrix.python-version }}
       run: pytest -v tests
 
   conan_windows:
@@ -98,10 +105,10 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.9
+        python-version: 3.14
     - name: Install dependencies and Conan latest
       run: |
         pip install -U pip
         pip install pytest conan
-    - name: Run Windows-specific tests - Conan latest / Python 3.9
+    - name: Run Windows-specific tests - Conan latest / Python 3.14
       run: pytest -v -m win32 tests

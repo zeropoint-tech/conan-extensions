@@ -61,17 +61,17 @@ def _get_hashes(file_path):
 
 
 def _get_formatted_time():
-    now = datetime.datetime.now(datetime.timezone.utc)
-    local_tz_offset = now.astimezone().strftime('%z')
-    formatted_time = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + local_tz_offset
+    now = datetime.datetime.now().astimezone()
+    ms = now.microsecond // 1000  # convert to milliseconds
+    formatted_time = now.strftime(f"%Y-%m-%dT%H:%M:%S.{ms:03d}%z")
 
     # Apparently if the timestamp has the Z the BuildInfo is not correctly identified in Artifactory
     # if local_tz_offset == "+0000":
     #    formatted_time = formatted_time[:-5] + "Z"
 
     # from here: https://github.com/jfrog/build-info-go/blob/9b6f2ec13eedc41ad0f66882e630c2882f90cc76/buildinfo-schema.json#L63
-    if not re.match(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}(Z|[+-]\d{4})$', formatted_time):
-        raise ValueError("Time format does not match BuildInfo required format.")
+    assert re.match(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{4})$', formatted_time), \
+        f"The generated timestamp {formatted_time} does not match BuildInfo required format."
 
     return formatted_time
 
@@ -186,7 +186,12 @@ class _BuildInfo:
         assert artifact_type in ["recipe", "package"]
 
         if artifact_type == "recipe":
-            artifacts_names = ["conan_sources.tgz", "conan_export.tgz", "conanfile.py", "conanmanifest.txt"]
+            artifacts_names = ["conanfile.py", "conanmanifest.txt"]
+            reference = RecipeReference.loads(node.get("ref"))
+            export_path = self._conan_api.cache.export_path(reference)
+            if set(os.listdir(export_path)) != set(artifacts_names):  # Check if recipe has additional exports files
+                artifacts_names.append("conan_export.tgz")
+            artifacts_names.append("conan_sources.tgz")
         else:
             artifacts_names = ["conan_package.tgz", "conaninfo.txt", "conanmanifest.txt"]
 
@@ -277,6 +282,11 @@ class _BuildInfo:
             return artifact_info
 
         artifacts, missing = _get_local_artifacts()
+        if missing:
+            tgz_items = {item for item in missing if item.endswith(".tgz") and "conan_sources.tgz" not in item}
+            if tgz_items:
+                ConanOutput().warning(f"There are missing .tgz files ({','.join(tgz_items)}). Make sure to upload the "
+                                      f"packages to Artifactory before creating a BuildInfo")
 
         if 'conan_sources.tgz' in missing:
             # check if we have the conan_sources in Artifactory, if it's not there
@@ -520,12 +530,19 @@ def build_info_promote(conan_api: ConanAPI, parser, subparser, *args):
     subparser.add_argument("build_number", help="BuildInfo number to promote.")
     subparser.add_argument("source_repo", help="Artifactory repository to get artifacts from.")
     subparser.add_argument("target_repo", help="Artifactory repository to promote artifacts to.")
-
+    subparser.add_argument("--continue-on-error",
+                           help="Promote all possible files even if some promotions fail (using failFast=false Artifactory API parameter). "
+                                "The exit code of the command will always be 0 regardless of any promotion failures. Default: false.",
+                           action='store_true', default=False)
     subparser.add_argument("--dependencies", help="Whether to copy the build's dependencies or not. Default: false.",
                            action='store_true', default=False)
+    subparser.add_argument("--status", help="The new status of the build. Default: ''")
     subparser.add_argument("--comment", help="An optional comment describing the reason for promotion. Default: ''")
 
     args = parser.parse_args(*args)
+    if args.comment and not args.status:
+        ConanOutput().warning("A comment was provided without a --status. The comment will not be tracked.")
+
     assert_server_or_url_user_password(args)
 
     url, user, password = get_url_user_password(args)
@@ -537,7 +554,9 @@ def build_info_promote(conan_api: ConanAPI, parser, subparser, *args):
         # otherwise you can end up deleting recipe artifacts that other packages use
         "copy": "true",
         "dependencies": "true" if args.dependencies else "false",
-        "comment": args.comment
+        "status": args.status,
+        "comment": args.comment,
+        "failFast": "false" if args.continue_on_error else "true"
     }
 
     request_url = f"{url}/api/build/promote/{args.build_name}/{args.build_number}"
@@ -621,33 +640,46 @@ def build_info_append(conan_api: ConanAPI, parser, subparser, *args):
 
     subparser.add_argument("build_name", help="The current build name.")
     subparser.add_argument("build_number", help="The current build number.")
-
     subparser.add_argument("--build-info", help="Name and number for the Build Info already published in Artifactory. "
                                                 "You can add multiple Builds like --build-info=build_name,build_number"
-                                                " --build-info=build_name,build_number",
-                           action="append")
+                                                " --build-info=build_name,build_number", action="append")
+    subparser.add_argument("--build-info-file", help="Path to the build-info file in your local folder. "
+                                                "You can add multiple build-info files like --build-info=bi-1.json"
+                                                " --build-info=bi-2.json", action="append")
 
     args = parser.parse_args(*args)
-    assert_server_or_url_user_password(args)
 
-    url, user, password = get_url_user_password(args)
-
-    for build_info in args.build_info:
-        if not "," in build_info:
-            raise ConanException("Please, provide the build name and number to append in the format: "
-                                 "--build-info=build_name,build_number")
+    if not args.build_info and not args.build_info_file:
+        raise ConanException("At least one of the arguments --build-info or --build-info-file is required. "
+                             "Please provide at least one build info to append in the format: "
+                             "--build-info=build_name,build_number or a local build info file with "
+                             "--build-info-file=path_to_bi.json")
 
     all_modules = []
 
-    for build_info in args.build_info:
-        name, number = build_info.split(",")
-        bi_json = get_buildinfo(name, number, url, user, password, args.project)
-        bi_data = json.loads(bi_json)
-        build_info = bi_data.get("buildInfo")
-        for module in build_info.get("modules"):
+    def _add_modules_from_buildinfo(build_info_data):
+        for module in build_info_data.get("modules"):
             # avoid repeating shared recipe modules between builds
             if not any(d['id'] == module.get('id') for d in all_modules):
                 all_modules.append(module)
+
+    if args.build_info:
+        assert_server_or_url_user_password(args)
+        url, user, password = get_url_user_password(args)
+
+        for build_info in args.build_info:
+            if not "," in build_info:
+                raise ConanException("Please, provide the build name and number to append in the format: "
+                                     "--build-info=build_name,build_number")
+            name, number = build_info.split(",")
+            bi_json = get_buildinfo(name, number, url, user, password, args.project)
+            bi_data = json.loads(bi_json).get("buildInfo")
+            _add_modules_from_buildinfo(bi_data)
+
+    if args.build_info_file:
+        for build_info_file in args.build_info_file:
+            bi_data = load_json(build_info_file)
+            _add_modules_from_buildinfo(bi_data)
 
     bi = _BuildInfo(conan_api, None, args.build_name, args.build_number, None)
     bi_json = bi.header()

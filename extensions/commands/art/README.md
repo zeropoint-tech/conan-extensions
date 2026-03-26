@@ -24,6 +24,15 @@ These are commands to manage certain Artifactory features:
   - ``set``
 
 
+### What gets included in the Build Info?
+
+The ``conan art:build-info create`` command records **all the packages that were built from source** during the
+``conan create`` command. This includes not only the main package being created, but also all the dependencies that were
+built from source during that command.
+
+Packages that are retrieved from Artifactory or from local cache are **not included by default**. Use the
+``--add-cached-deps`` flag in case you want to include those packages as well.
+
 ### How to manage Build Info's in Artifactory
 
 #### 1. Configure your Artifactory server
@@ -43,11 +52,16 @@ conan create . --format json -s build_type=Release > create_release.json
 conan create . --format json -s build_type=Debug > create_debug.json
 ```
 
+**Note**: In case you are using different machines or different Conan cache folders (e.g. when running on a CI system), the recommended flow is to previously upload the recipe to Artifactory and then use ``conan install --requires=<pkg> --build=<pkg> `` + ``conan test ...`` on each machine to create the binaries for different configurations. This is the way to make sure you operate over the same recipe revision and its metadata files across all the CI machine agents.
+
 Then upload the created package to your repository:
 
 ```
 conan upload ... -c -r <conan-remote>
 ```
+
+**Important**: Make sure to upload the packages _before_ creating a Build Info so conan_exports.tgz or conan_package.tgz
+files are generated. Otherwise, the created Build Info might be incomplete.
 
 Using the generated JSON files you can create a Build Info JSON file. To do this, you need to provide the build
 name and number. You will also need to indicate the artifactory server to use and the name of repository where the packages were uploaded in Artifactory (probably **not** the same one as the Conan remote name):
@@ -63,7 +77,7 @@ conan art:build-info create create_debug.json mybuildname_debug 1 <artifactory-r
 conan art:build-info create create_release.json mybuildname_release 1 <artifactory-repo1> <artifactory-repo2> --server my_artifactory --with-dependencies > mybuildname_release.json
 ```
 
-### 3. Upload the build infos to your Artifactory server
+#### 3. Upload the build infos to your Artifactory server
 
 Finally, you can upload the Build Info's:
 
@@ -72,25 +86,37 @@ conan art:build-info upload mybuildname_release.json --server my_artifactory
 conan art:build-info upload mybuildname_debug.json <url> --server my_artifactory
 ```
 
-### 4. Aggregate build infos into one
+#### 4. Aggregate build infos into one
 
 In this case we generated two Build Info's, for Release and Debug, but we can also merge those to
 create a new Build Info that aggregates that information:
 
 ```
 conan art:build-info append mybuildname_aggregated 1 --build-info=mybuildname_release,1 --build-info=mybuildname_debug,1 --server my_artifactory > mybuildname_aggregated.json
-conan art:build-info upload mybuildname_aggregated.json --server my_artifactory"
 ```
 
 This is handy in order to make promotions of packages from one repository to another in Artifactory.
 
-### 5. Promote all the binaries of the aggregated build info
+**Note**: You can also append Build Info's without the need to upload them individually beforehand.
+Just append them by file using the `--build-info-file` argument instead of `--build-info`:
 
 ```
-conan art:build-info promote mybuildname_aggregated 1 origin-artifactory-repo destination-artifactory-repo --server my_artifactory}
+conan art:build-info append mybuildname_aggregated 1 --build-info-file=mybuildname_release.json --build-info-file=mybuildname_debug.json > mybuildname_aggregated.json
 ```
 
-Now, both release and debug binaries from that pacakge ae available in the destination repository with just one command.
+Now you can upload the aggregated Build Info to Artifactory:
+
+```
+conan art:build-info upload mybuildname_aggregated.json --server my_artifactory
+```
+
+#### 5. Promote all the binaries of the aggregated build info
+
+```
+conan art:build-info promote mybuildname_aggregated 1 origin-artifactory-repo destination-artifactory-repo --server my_artifactory
+```
+
+Now, both release and debug binaries from that package are available in the destination repository with just one command.
 
 #### [conan art:promote](cmd_promote.py)
 

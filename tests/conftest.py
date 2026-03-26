@@ -4,6 +4,14 @@ import sys
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "requires_credentials: needs Artifactory credentials to run the test",
+    )
+    config.addinivalue_line("markers", "win32: run only on Windows")
+
+
 def pytest_collection_modifyitems(items):
     for item in items:
         if "requires_credentials" in item.keywords:
